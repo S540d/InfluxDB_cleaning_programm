@@ -23,6 +23,7 @@ This tool provides a safe, interactive solution for database cleanup with automa
 - **Tag and field analysis**
 - **Duplicate detection** based on similar names
 - **Hierarchy visualization** - Tree-like representation of measurement relationships
+- **Performance optimization** - Parallel processing and optimized queries
 
 ### 🖥️ User-Friendly Interface
 - **GUI mode** with interactive table
@@ -74,9 +75,15 @@ python influx_cleaner.py
 
 **Workflow:**
 1. **Connect** to InfluxDB
-2. Click **Analyze** for automatic problem detection
+2. Click **Analyze** for automatic problem detection (optimized with parallel processing)
 3. **Select measurements** in the table
 4. **Execute desired action** (Delete/Merge/Clean)
+
+**Performance Features:**
+- **Parallel analysis** with configurable worker threads
+- **Optimized queries** with reduced data transfer
+- **Live progress** during analysis
+- **Smart caching** for repeated queries
 
 ### Command Line Mode
 ```bash

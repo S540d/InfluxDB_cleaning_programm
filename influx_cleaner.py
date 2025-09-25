@@ -18,6 +18,9 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from tkinter.scrolledtext import ScrolledText
+import concurrent.futures
+import threading
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,6 +55,153 @@ class InfluxDBAnalyzer:
         except Exception as e:
             logger.error(f"Failed to get measurements: {e}")
             return []
+
+    def analyze_measurements_parallel(self, measurements: List[str], max_workers: int = 4) -> Dict[str, Dict]:
+        """Analyze multiple measurements in parallel"""
+        results = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all measurement analysis tasks
+            future_to_measurement = {
+                executor.submit(self.analyze_measurement_fast, measurement): measurement
+                for measurement in measurements
+            }
+
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_measurement):
+                measurement = future_to_measurement[future]
+                try:
+                    analysis = future.result()
+                    results[measurement] = analysis
+                    logger.info(f"Analyzed {measurement}: {analysis['total_points']} points")
+                except Exception as e:
+                    logger.error(f"Failed to analyze {measurement}: {e}")
+                    results[measurement] = self._create_empty_analysis(measurement)
+
+        return results
+
+    def analyze_measurement_fast(self, measurement: str) -> Dict:
+        """Fast analysis of a single measurement with optimized queries"""
+        analysis = {
+            'name': measurement,
+            'total_points': 0,
+            'time_range': None,
+            'fields': [],
+            'tags': {},
+            'sample_data': [],
+            'last_entry': 'No data'
+        }
+
+        try:
+            # Single combined query to get count, fields, and sample data
+            combined_query = f'''
+            SELECT COUNT(*) FROM "{measurement}";
+            SELECT * FROM "{measurement}" ORDER BY time DESC LIMIT 5;
+            SELECT * FROM "{measurement}" ORDER BY time ASC LIMIT 1
+            '''
+
+            # Get basic info with one query
+            basic_info = self._get_basic_measurement_info(measurement)
+            analysis.update(basic_info)
+
+            # Get sample data for time range
+            sample_data = self._get_sample_data_fast(measurement)
+            analysis.update(sample_data)
+
+        except Exception as e:
+            logger.error(f"Fast analysis failed for {measurement}: {e}")
+            # Fallback to slow method
+            return self.analyze_measurement(measurement)
+
+        return analysis
+
+    def _get_basic_measurement_info(self, measurement: str) -> Dict:
+        """Get basic measurement info with minimal queries"""
+        info = {
+            'total_points': 0,
+            'fields': [],
+            'tags': {}
+        }
+
+        try:
+            # Get count with optimized query
+            count_query = f'SELECT COUNT(*) FROM "{measurement}" LIMIT 1'
+            result = self.client.query(count_query)
+            points = list(result.get_points())
+            if points:
+                info['total_points'] = sum(v for v in points[0].values() if isinstance(v, (int, float)))
+
+            # Get field and tag info (these are metadata queries, relatively fast)
+            field_result = self.client.query(f'SHOW FIELD KEYS FROM "{measurement}"')
+            info['fields'] = [point['fieldKey'] for point in field_result.get_points()]
+
+            tag_result = self.client.query(f'SHOW TAG KEYS FROM "{measurement}"')
+            tag_keys = [point['tagKey'] for point in tag_result.get_points()]
+
+            # Only get tag values if there aren't too many tags (performance optimization)
+            if len(tag_keys) <= 5:  # Limit to avoid slow queries
+                for tag_key in tag_keys:
+                    tag_values_result = self.client.query(f'SHOW TAG VALUES FROM "{measurement}" WITH KEY = "{tag_key}" LIMIT 10')
+                    info['tags'][tag_key] = [point['value'] for point in tag_values_result.get_points()]
+            else:
+                # Just store tag keys without values for performance
+                info['tags'] = {key: [] for key in tag_keys}
+
+        except Exception as e:
+            logger.error(f"Failed to get basic info for {measurement}: {e}")
+
+        return info
+
+    def _get_sample_data_fast(self, measurement: str) -> Dict:
+        """Get sample data and time range efficiently"""
+        info = {
+            'sample_data': [],
+            'time_range': None,
+            'last_entry': 'No data'
+        }
+
+        try:
+            # Get only recent samples (faster than full scan)
+            sample_query = f'SELECT * FROM "{measurement}" ORDER BY time DESC LIMIT 3'
+            sample_result = self.client.query(sample_query)
+            sample_points = list(sample_result.get_points())
+
+            if sample_points:
+                info['sample_data'] = sample_points
+
+                # Get time range from samples
+                times = []
+                for point in sample_points:
+                    try:
+                        time_obj = datetime.fromisoformat(point['time'].replace('Z', '+00:00'))
+                        times.append(time_obj)
+                    except:
+                        continue
+
+                if times:
+                    latest_time = max(times)
+                    info['last_entry'] = latest_time.strftime('%Y-%m-%d %H:%M:%S')
+                    info['time_range'] = {
+                        'start': min(times).isoformat(),
+                        'end': latest_time.isoformat()
+                    }
+
+        except Exception as e:
+            logger.error(f"Failed to get sample data for {measurement}: {e}")
+
+        return info
+
+    def _create_empty_analysis(self, measurement: str) -> Dict:
+        """Create empty analysis for failed measurements"""
+        return {
+            'name': measurement,
+            'total_points': 0,
+            'time_range': None,
+            'fields': [],
+            'tags': {},
+            'sample_data': [],
+            'last_entry': 'Error'
+        }
 
     def analyze_measurement(self, measurement: str) -> Dict:
         """Analyze a single measurement for data quality"""
@@ -281,12 +431,27 @@ class InfluxCleanerGUI:
             messagebox.showerror("Error", f"Connection failed: {str(e)}")
 
     def analyze_db(self):
-        """Analyze the database for cleaning opportunities"""
+        """Analyze the database for cleaning opportunities with performance optimization"""
         if not self.analyzer:
             messagebox.showerror("Error", "Please connect to database first")
             return
 
         try:
+            # Show progress
+            self.show_analysis_progress("Starting analysis...")
+
+            # Use optimized parallel analysis
+            measurements = self.analyzer.get_measurements()
+            if not measurements:
+                messagebox.showinfo("Info", "No measurements found in database")
+                return
+
+            self.show_analysis_progress(f"Analyzing {len(measurements)} measurements in parallel...")
+
+            # Use parallel analysis for better performance
+            self.analyzer.measurements = self.analyzer.analyze_measurements_parallel(measurements)
+
+            self.show_analysis_progress("Identifying problematic measurements...")
             problematic = self.analyzer.get_problematic_measurements()
 
             # Update overview
@@ -333,11 +498,27 @@ class InfluxCleanerGUI:
                     status
                 ))
 
+            self.show_analysis_progress("Building hierarchy tree...")
             # Update hierarchy tree
             self.populate_hierarchy_tree()
 
+            self.show_analysis_progress("Analysis complete!", final=True)
+
         except Exception as e:
+            self.show_analysis_progress("Analysis failed!", final=True)
             messagebox.showerror("Error", f"Analysis failed: {str(e)}")
+
+    def show_analysis_progress(self, message: str, final: bool = False):
+        """Show analysis progress to user"""
+        self.overview_text.delete(1.0, tk.END)
+        if final:
+            self.overview_text.insert(1.0, f"✅ {message}\n\nAnalysis completed successfully!")
+        else:
+            self.overview_text.insert(1.0, f"⏳ {message}\n\nPlease wait...")
+
+        # Force UI update
+        self.root.update_idletasks()
+        self.root.update()
 
     def export_analysis(self):
         """Export analysis results to JSON file"""
