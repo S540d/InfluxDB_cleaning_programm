@@ -209,6 +209,10 @@ class InfluxCleanerGUI:
         self.measurements_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.measurements_frame, text="Measurements")
 
+        # Hierarchy tab
+        self.hierarchy_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.hierarchy_frame, text="Hierarchy")
+
         # Create treeview for measurements (enable multiple selection)
         self.tree = ttk.Treeview(self.measurements_frame, columns=('Points', 'Fields', 'Tags', 'LastEntry', 'Status'), show='tree headings', selectmode='extended')
         self.tree.heading('#0', text='Measurement')
@@ -235,6 +239,9 @@ class InfluxCleanerGUI:
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=0, column=1, sticky="ns")
 
+        # Setup hierarchy tree
+        self.setup_hierarchy_tree()
+
         # Actions frame
         actions_frame = ttk.LabelFrame(self.root, text="Actions", padding="10")
         actions_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
@@ -253,6 +260,8 @@ class InfluxCleanerGUI:
         self.overview_frame.rowconfigure(0, weight=1)
         self.measurements_frame.columnconfigure(0, weight=1)
         self.measurements_frame.rowconfigure(0, weight=1)
+        self.hierarchy_frame.columnconfigure(0, weight=1)
+        self.hierarchy_frame.rowconfigure(0, weight=1)
 
     def connect_db(self):
         """Connect to the InfluxDB database"""
@@ -324,6 +333,9 @@ class InfluxCleanerGUI:
                     status
                 ))
 
+            # Update hierarchy tree
+            self.populate_hierarchy_tree()
+
         except Exception as e:
             messagebox.showerror("Error", f"Analysis failed: {str(e)}")
 
@@ -345,6 +357,278 @@ class InfluxCleanerGUI:
                 messagebox.showinfo("Success", f"Analysis exported to {filename}")
             except Exception as e:
                 messagebox.showerror("Error", f"Export failed: {str(e)}")
+
+    def setup_hierarchy_tree(self):
+        """Setup the hierarchy tree widget"""
+        # Create hierarchy tree with columns
+        self.hierarchy_tree = ttk.Treeview(self.hierarchy_frame, columns=('Count', 'Points', 'LastEntry'), show='tree headings')
+        self.hierarchy_tree.heading('#0', text='Measurement Hierarchy')
+        self.hierarchy_tree.heading('Count', text='Count')
+        self.hierarchy_tree.heading('Points', text='Total Points')
+        self.hierarchy_tree.heading('LastEntry', text='Latest Entry')
+
+        # Set column widths
+        self.hierarchy_tree.column('Count', width=60)
+        self.hierarchy_tree.column('Points', width=80)
+        self.hierarchy_tree.column('LastEntry', width=120)
+
+        self.hierarchy_tree.grid(row=0, column=0, sticky="nsew")
+
+        # Scrollbar for hierarchy tree
+        hierarchy_scrollbar = ttk.Scrollbar(self.hierarchy_frame, orient="vertical", command=self.hierarchy_tree.yview)
+        self.hierarchy_tree.configure(yscrollcommand=hierarchy_scrollbar.set)
+        hierarchy_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Add double-click binding
+        self.hierarchy_tree.bind('<Double-1>', self.on_hierarchy_double_click)
+
+    def build_measurement_hierarchy(self) -> Dict:
+        """Build a hierarchical structure of measurements"""
+        if not self.analyzer or not self.analyzer.measurements:
+            return {}
+
+        hierarchy = {}
+        measurements = self.analyzer.measurements
+
+        # Group by common prefixes (split by underscore, dot, dash)
+        for name, analysis in measurements.items():
+            parts = self._split_measurement_name(name)
+            current_level = hierarchy
+
+            # Build tree structure
+            for i, part in enumerate(parts):
+                if part not in current_level:
+                    current_level[part] = {
+                        '_children': {},
+                        '_measurements': [],
+                        '_stats': {
+                            'count': 0,
+                            'total_points': 0,
+                            'latest_entry': None
+                        }
+                    }
+
+                current_level[part]['_stats']['count'] += 1
+                current_level[part]['_stats']['total_points'] += analysis.get('total_points', 0)
+
+                # Update latest entry
+                entry_time = analysis.get('last_entry', '')
+                if entry_time and entry_time != 'No data':
+                    current_latest = current_level[part]['_stats']['latest_entry']
+                    if not current_latest or entry_time > current_latest:
+                        current_level[part]['_stats']['latest_entry'] = entry_time
+
+                # If this is the last part, add the full measurement
+                if i == len(parts) - 1:
+                    current_level[part]['_measurements'].append({
+                        'name': name,
+                        'analysis': analysis
+                    })
+                else:
+                    current_level = current_level[part]['_children']
+
+        # Also group by tags if available
+        tag_hierarchy = self._group_by_tags(measurements)
+        if tag_hierarchy:
+            hierarchy['[By Tags]'] = tag_hierarchy
+
+        # Group by topic/domain (heuristic based on common patterns)
+        topic_hierarchy = self._group_by_topics(measurements)
+        if topic_hierarchy:
+            hierarchy['[By Topics]'] = topic_hierarchy
+
+        return hierarchy
+
+    def _split_measurement_name(self, name: str) -> List[str]:
+        """Split measurement name into logical parts"""
+        # Replace common separators with underscores, then split
+        import re
+        normalized = re.sub(r'[._\-/]', '_', name)
+        parts = [part for part in normalized.split('_') if part]
+
+        # If no separators found, try camelCase/PascalCase splitting
+        if len(parts) == 1:
+            camel_parts = re.findall(r'[A-Z][a-z]*|[a-z]+|[0-9]+', name)
+            if len(camel_parts) > 1:
+                parts = camel_parts
+
+        return parts if len(parts) > 1 else [name]
+
+    def _group_by_tags(self, measurements: Dict) -> Dict:
+        """Group measurements by common tags"""
+        tag_groups = {}
+
+        for name, analysis in measurements.items():
+            tags = analysis.get('tags', {})
+
+            if not tags:
+                continue
+
+            # Group by each tag key
+            for tag_key, tag_values in tags.items():
+                if tag_key not in tag_groups:
+                    tag_groups[tag_key] = {
+                        '_children': {},
+                        '_measurements': [],
+                        '_stats': {'count': 0, 'total_points': 0, 'latest_entry': None}
+                    }
+
+                # Group by tag values
+                for tag_value in tag_values:
+                    if tag_value not in tag_groups[tag_key]['_children']:
+                        tag_groups[tag_key]['_children'][tag_value] = {
+                            '_children': {},
+                            '_measurements': [],
+                            '_stats': {'count': 0, 'total_points': 0, 'latest_entry': None}
+                        }
+
+                    # Add measurement to this tag value group
+                    tag_groups[tag_key]['_children'][tag_value]['_measurements'].append({
+                        'name': name,
+                        'analysis': analysis
+                    })
+
+                    # Update stats
+                    tag_groups[tag_key]['_children'][tag_value]['_stats']['count'] += 1
+                    tag_groups[tag_key]['_children'][tag_value]['_stats']['total_points'] += analysis.get('total_points', 0)
+
+                    entry_time = analysis.get('last_entry', '')
+                    if entry_time and entry_time != 'No data':
+                        current_latest = tag_groups[tag_key]['_children'][tag_value]['_stats']['latest_entry']
+                        if not current_latest or entry_time > current_latest:
+                            tag_groups[tag_key]['_children'][tag_value]['_stats']['latest_entry'] = entry_time
+
+                # Update parent stats
+                tag_groups[tag_key]['_stats']['count'] += 1
+                tag_groups[tag_key]['_stats']['total_points'] += analysis.get('total_points', 0)
+
+        return tag_groups
+
+    def _group_by_topics(self, measurements: Dict) -> Dict:
+        """Group measurements by inferred topics"""
+        topics = {
+            'sensor': ['temp', 'temperature', 'humid', 'pressure', 'light', 'motion', 'distance'],
+            'system': ['cpu', 'memory', 'disk', 'network', 'load', 'uptime'],
+            'power': ['voltage', 'current', 'power', 'battery', 'energy'],
+            'weather': ['weather', 'wind', 'rain', 'sun', 'cloud'],
+            'home': ['home', 'room', 'kitchen', 'living', 'bedroom', 'garage'],
+            'vehicle': ['car', 'truck', 'vehicle', 'engine', 'fuel', 'speed'],
+            'industrial': ['machine', 'production', 'factory', 'pump', 'motor']
+        }
+
+        topic_groups = {}
+
+        for name, analysis in measurements.items():
+            name_lower = name.lower()
+            matched_topics = []
+
+            # Check which topics match
+            for topic, keywords in topics.items():
+                if any(keyword in name_lower for keyword in keywords):
+                    matched_topics.append(topic)
+
+            # If no topic matches, use 'other'
+            if not matched_topics:
+                matched_topics = ['other']
+
+            # Add to each matching topic
+            for topic in matched_topics:
+                if topic not in topic_groups:
+                    topic_groups[topic] = {
+                        '_children': {},
+                        '_measurements': [],
+                        '_stats': {'count': 0, 'total_points': 0, 'latest_entry': None}
+                    }
+
+                topic_groups[topic]['_measurements'].append({
+                    'name': name,
+                    'analysis': analysis
+                })
+
+                # Update stats
+                topic_groups[topic]['_stats']['count'] += 1
+                topic_groups[topic]['_stats']['total_points'] += analysis.get('total_points', 0)
+
+                entry_time = analysis.get('last_entry', '')
+                if entry_time and entry_time != 'No data':
+                    current_latest = topic_groups[topic]['_stats']['latest_entry']
+                    if not current_latest or entry_time > current_latest:
+                        topic_groups[topic]['_stats']['latest_entry'] = entry_time
+
+        return topic_groups
+
+    def populate_hierarchy_tree(self):
+        """Populate the hierarchy tree with measurement data"""
+        if not hasattr(self, 'hierarchy_tree'):
+            return
+
+        # Clear existing items
+        self.hierarchy_tree.delete(*self.hierarchy_tree.get_children())
+
+        # Build hierarchy
+        hierarchy = self.build_measurement_hierarchy()
+
+        if not hierarchy:
+            return
+
+        # Populate tree
+        self._add_hierarchy_nodes('', hierarchy)
+
+        # Expand first level
+        for item in self.hierarchy_tree.get_children():
+            self.hierarchy_tree.item(item, open=True)
+
+    def _add_hierarchy_nodes(self, parent: str, nodes: Dict):
+        """Recursively add nodes to the hierarchy tree"""
+        for name, data in nodes.items():
+            if name.startswith('_'):  # Skip metadata keys
+                continue
+
+            stats = data.get('_stats', {})
+            count = stats.get('count', 0)
+            total_points = stats.get('total_points', 0)
+            latest_entry = stats.get('latest_entry', 'No data')
+
+            # Add node
+            node_id = self.hierarchy_tree.insert(parent, 'end', text=name, values=(count, total_points, latest_entry))
+
+            # Add children
+            children = data.get('_children', {})
+            if children:
+                self._add_hierarchy_nodes(node_id, children)
+
+            # Add individual measurements
+            measurements = data.get('_measurements', [])
+            for measurement in measurements:
+                m_name = measurement['name']
+                m_analysis = measurement['analysis']
+                self.hierarchy_tree.insert(node_id, 'end', text=f"📊 {m_name}",
+                    values=(1, m_analysis.get('total_points', 0), m_analysis.get('last_entry', 'No data')))
+
+    def on_hierarchy_double_click(self, event):
+        """Handle double-click on hierarchy item"""
+        selected_item = self.hierarchy_tree.selection()
+        if not selected_item:
+            return
+
+        item = selected_item[0]
+        item_text = self.hierarchy_tree.item(item, 'text')
+
+        # If it's a measurement (starts with 📊), show details
+        if item_text.startswith('📊 '):
+            measurement_name = item_text[2:]  # Remove emoji prefix
+            if measurement_name in self.analyzer.measurements:
+                analysis = self.analyzer.measurements[measurement_name]
+                details = f"Measurement: {measurement_name}\n\n"
+                details += f"Total Points: {analysis['total_points']}\n"
+                details += f"Fields: {', '.join(analysis['fields'])}\n"
+                details += f"Tags: {list(analysis['tags'].keys())}\n"
+                details += f"Time Range: {analysis.get('time_range', 'Unknown')}\n\n"
+                details += "Sample Data:\n"
+                for sample in analysis['sample_data'][:3]:
+                    details += f"  {sample}\n"
+
+                messagebox.showinfo(f"Details: {measurement_name}", details)
 
     def get_selected_measurements(self):
         """Get list of selected measurements from treeview"""

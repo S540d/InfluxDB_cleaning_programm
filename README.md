@@ -22,6 +22,7 @@ Dieses Tool bietet eine sichere, interaktive Lösung zur Datenbankbereinigung mi
 - **Datenpunkt-Zählung** für jede Messung
 - **Tag- und Field-Analyse**
 - **Duplikaterkennung** basierend auf ähnlichen Namen
+- **Hierarchie-Visualisierung** - Tree-ähnliche Darstellung der Measurement-Beziehungen
 
 ### 🖥️ Benutzerfreundliche Oberfläche
 - **GUI-Modus** mit interaktiver Tabelle
@@ -92,6 +93,7 @@ python influx_cleaner.py --host influxdb.example.com --port 8086 --database sens
 - **Connection Panel**: InfluxDB Verbindungsparameter
 - **Overview Tab**: Zusammenfassung der Analyseergebnisse
 - **Measurements Tab**: Detaillierte Tabelle aller Messungen
+- **Hierarchy Tab**: Tree-Darstellung der Measurement-Beziehungen
 
 ### Tabellen-Spalten
 - **Measurement**: Name der Messung
@@ -106,6 +108,25 @@ python influx_cleaner.py --host influxdb.example.com --port 8086 --database sens
 - **Merge Selected**: Messungen zusammenführen
 - **Clean Low Data**: Messungen mit wenigen Datenpunkten bereinigen
 - **Export Analysis**: Analyseergebnisse als JSON exportieren
+
+### Hierarchy Tab
+Die Hierarchy-Ansicht zeigt Measurements in einer baumartigen Struktur:
+
+**Gruppierungen:**
+- **Nach Namen**: Automatische Gruppierung nach gemeinsamen Präfixen (temp_kitchen, temp_living → temp/)
+- **Nach Tags**: Gruppierung nach Tag-Schlüsseln und -Werten
+- **Nach Themen**: Intelligente Kategorisierung (sensor, system, power, etc.)
+
+**Navigation:**
+- **Expandierbar**: Klickbare Knoten zum Auf-/Zuklappen
+- **Statistiken**: Zeigt Anzahl, Gesamtpunkte und neuesten Eintrag pro Gruppe
+- **Detail-Ansicht**: Doppelklick auf 📊 Symbole für Measurement-Details
+
+**Nutzen:**
+- Visualisiert Beziehungen zwischen Measurements
+- Identifiziert logische Gruppierungen
+- Hilft bei Merge-Entscheidungen
+- Zeigt Naming-Patterns auf
 
 ## 🔧 Konfiguration
 
