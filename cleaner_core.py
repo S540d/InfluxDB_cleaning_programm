@@ -6,10 +6,11 @@ This module provides the actual data manipulation and cleaning operations.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from influxdb import InfluxDBClient
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -307,3 +308,225 @@ class InfluxDBCleaner:
         except Exception as e:
             logger.error(f"Failed to rename measurement {old_name} to {new_name}: {e}")
             return False
+
+    def aggregate_old_data(self, measurement: str, cutoff_date: datetime,
+                          aggregation: str = 'daily', fields: List[str] = None) -> bool:
+        """Aggregate old data points to reduce storage while preserving trends"""
+        try:
+            # Backup first
+            backup_success = self.backup_measurement(measurement)
+            if not backup_success:
+                logger.error(f"Failed to backup {measurement}, aborting aggregation")
+                return False
+
+            # Get fields if not specified
+            if not fields:
+                field_query = f'SHOW FIELD KEYS FROM "{measurement}"'
+                field_result = self.client.query(field_query)
+                fields = [point['fieldKey'] for point in field_result.get_points()]
+
+            if not fields:
+                logger.warning(f"No fields found for {measurement}")
+                return False
+
+            # Define aggregation intervals
+            intervals = {
+                'hourly': '1h',
+                'daily': '1d',
+                'weekly': '1w',
+                'monthly': '30d'
+            }
+
+            if aggregation not in intervals:
+                logger.error(f"Invalid aggregation type: {aggregation}")
+                return False
+
+            interval = intervals[aggregation]
+            cutoff_str = cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+            logger.info(f"Aggregating {measurement} data older than {cutoff_str} to {aggregation} averages")
+
+            # Create aggregated measurement name
+            aggregated_name = f"{measurement}_agg_{aggregation}"
+
+            # Build aggregation query for old data
+            field_aggregations = []
+            for field in fields:
+                # Try different aggregation functions based on field name
+                if any(keyword in field.lower() for keyword in ['count', 'total', 'sum']):
+                    field_aggregations.append(f'SUM("{field}") AS "{field}"')
+                elif any(keyword in field.lower() for keyword in ['max', 'peak', 'highest']):
+                    field_aggregations.append(f'MAX("{field}") AS "{field}"')
+                elif any(keyword in field.lower() for keyword in ['min', 'lowest']):
+                    field_aggregations.append(f'MIN("{field}") AS "{field}"')
+                else:
+                    # Default to mean for most metrics like CPU, temperature, etc.
+                    field_aggregations.append(f'MEAN("{field}") AS "{field}"')
+
+            aggregation_fields = ', '.join(field_aggregations)
+
+            # Query to create aggregated data
+            agg_query = f'''
+            SELECT {aggregation_fields}
+            INTO "{aggregated_name}"
+            FROM "{measurement}"
+            WHERE time < '{cutoff_str}'
+            GROUP BY time({interval}), *
+            '''
+
+            logger.info(f"Running aggregation query: {agg_query[:100]}...")
+            result = self.client.query(agg_query)
+
+            # Count aggregated points
+            count_result = self.client.query(f'SELECT COUNT(*) FROM "{aggregated_name}"')
+            aggregated_count = 0
+            for point in count_result.get_points():
+                aggregated_count += sum(v for v in point.values() if isinstance(v, (int, float)))
+
+            if aggregated_count > 0:
+                logger.info(f"Created {aggregated_count} aggregated data points")
+
+                # Delete original old data
+                delete_query = f'DELETE FROM "{measurement}" WHERE time < \'{cutoff_str}\''
+                self.client.query(delete_query)
+
+                logger.info(f"Successfully aggregated old data for {measurement}")
+                return True
+            else:
+                logger.warning(f"No data was aggregated for {measurement}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to aggregate data for {measurement}: {e}")
+            return False
+
+    def filter_and_clean_by_age(self, measurements: List[str],
+                               older_than_years: float = 2.0,
+                               action: str = 'aggregate') -> Dict[str, bool]:
+        """Filter and clean measurements based on data age"""
+        results = {}
+        cutoff_date = datetime.now() - timedelta(days=older_than_years * 365)
+
+        logger.info(f"Processing measurements with data older than {cutoff_date.strftime('%Y-%m-%d')}")
+
+        for measurement in measurements:
+            try:
+                # Check if measurement has old data
+                old_data_query = f'SELECT COUNT(*) FROM "{measurement}" WHERE time < \'{cutoff_date.strftime("%Y-%m-%dT%H:%M:%SZ")}\''
+                old_data_result = self.client.query(old_data_query)
+
+                old_count = 0
+                for point in old_data_result.get_points():
+                    old_count += sum(v for v in point.values() if isinstance(v, (int, float)))
+
+                if old_count == 0:
+                    logger.info(f"No old data found in {measurement}")
+                    results[measurement] = True
+                    continue
+
+                logger.info(f"Found {old_count} old data points in {measurement}")
+
+                if action == 'aggregate':
+                    # Determine best aggregation based on data density
+                    if old_count > 50000:  # Very high density - monthly
+                        aggregation = 'monthly'
+                    elif old_count > 10000:  # High density - weekly
+                        aggregation = 'weekly'
+                    elif old_count > 1000:   # Medium density - daily
+                        aggregation = 'daily'
+                    else:                    # Low density - hourly
+                        aggregation = 'hourly'
+
+                    results[measurement] = self.aggregate_old_data(measurement, cutoff_date, aggregation)
+
+                elif action == 'delete':
+                    # Backup then delete old data
+                    backup_success = self.backup_measurement(measurement)
+                    if backup_success:
+                        delete_query = f'DELETE FROM "{measurement}" WHERE time < \'{cutoff_date.strftime("%Y-%m-%dT%H:%M:%SZ")}\''
+                        self.client.query(delete_query)
+                        results[measurement] = True
+                        logger.info(f"Deleted old data from {measurement}")
+                    else:
+                        results[measurement] = False
+
+                else:
+                    logger.error(f"Invalid action: {action}")
+                    results[measurement] = False
+
+            except Exception as e:
+                logger.error(f"Failed to process {measurement}: {e}")
+                results[measurement] = False
+
+        return results
+
+    def analyze_data_density(self, measurement: str, days_back: int = 30) -> Dict:
+        """Analyze data density to recommend optimal aggregation strategy"""
+        try:
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days_back)
+
+            # Count total points in time window
+            count_query = f'''
+            SELECT COUNT(*) FROM "{measurement}"
+            WHERE time >= '{start_time.strftime("%Y-%m-%dT%H:%M:%SZ")}'
+            AND time <= '{end_time.strftime("%Y-%m-%dT%H:%M:%SZ")}'
+            '''
+
+            count_result = self.client.query(count_query)
+            total_points = 0
+            for point in count_result.get_points():
+                total_points += sum(v for v in point.values() if isinstance(v, (int, float)))
+
+            if total_points == 0:
+                return {'error': 'No data in specified time range'}
+
+            # Calculate metrics
+            points_per_day = total_points / days_back
+            points_per_hour = points_per_day / 24
+            points_per_minute = points_per_hour / 60
+
+            # Recommend aggregation strategy
+            recommendations = []
+
+            if points_per_minute > 10:
+                recommendations.append(f"Very high frequency ({points_per_minute:.1f} points/min) - Consider hourly aggregation for old data")
+            elif points_per_hour > 10:
+                recommendations.append(f"High frequency ({points_per_hour:.1f} points/hour) - Consider daily aggregation for old data")
+            elif points_per_day > 5:
+                recommendations.append(f"Medium frequency ({points_per_day:.1f} points/day) - Consider weekly aggregation for very old data")
+            else:
+                recommendations.append(f"Low frequency ({points_per_day:.1f} points/day) - Aggregation may not be beneficial")
+
+            # Estimate storage savings
+            old_data_query = f'SELECT COUNT(*) FROM "{measurement}" WHERE time < \'{(end_time - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")}\''
+            old_data_result = self.client.query(old_data_query)
+
+            old_points = 0
+            for point in old_data_result.get_points():
+                old_points += sum(v for v in point.values() if isinstance(v, (int, float)))
+
+            # Estimate reduction ratios
+            daily_reduction = max(1, old_points / 365) if old_points > 0 else 0
+            weekly_reduction = max(1, old_points / 52) if old_points > 0 else 0
+            monthly_reduction = max(1, old_points / 12) if old_points > 0 else 0
+
+            return {
+                'measurement': measurement,
+                'analysis_period_days': days_back,
+                'total_points_analyzed': total_points,
+                'points_per_minute': round(points_per_minute, 2),
+                'points_per_hour': round(points_per_hour, 2),
+                'points_per_day': round(points_per_day, 2),
+                'old_data_points': old_points,
+                'recommendations': recommendations,
+                'estimated_reductions': {
+                    'daily_aggregation': f"{old_points} → {int(daily_reduction)} points ({(1-daily_reduction/max(old_points,1))*100:.1f}% reduction)" if old_points > 0 else "No old data",
+                    'weekly_aggregation': f"{old_points} → {int(weekly_reduction)} points ({(1-weekly_reduction/max(old_points,1))*100:.1f}% reduction)" if old_points > 0 else "No old data",
+                    'monthly_aggregation': f"{old_points} → {int(monthly_reduction)} points ({(1-monthly_reduction/max(old_points,1))*100:.1f}% reduction)" if old_points > 0 else "No old data"
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to analyze data density for {measurement}: {e}")
+            return {'error': str(e)}

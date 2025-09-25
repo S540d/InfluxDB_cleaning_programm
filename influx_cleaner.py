@@ -401,6 +401,11 @@ class InfluxCleanerGUI:
         ttk.Button(actions_frame, text="Merge Selected", command=self.merge_selected).grid(row=0, column=2, padx=5)
         ttk.Button(actions_frame, text="Clean Low Data", command=self.clean_low_data).grid(row=0, column=3, padx=5)
 
+        # Second row for aggregation functions
+        ttk.Button(actions_frame, text="Analyze Density", command=self.analyze_density).grid(row=1, column=0, padx=5, pady=5)
+        ttk.Button(actions_frame, text="Aggregate Old Data", command=self.aggregate_old_data_gui).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Button(actions_frame, text="Filter by Age", command=self.filter_by_age_gui).grid(row=1, column=2, padx=5, pady=5)
+
         # Configure grid weights
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
@@ -977,6 +982,251 @@ class InfluxCleanerGUI:
 
             except Exception as e:
                 messagebox.showerror("Error", f"Cleanup failed: {str(e)}")
+
+    def analyze_density(self):
+        """Analyze data density for selected measurements"""
+        selected = self.get_selected_measurements()
+
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select measurements to analyze.")
+            return
+
+        if not self.analyzer:
+            messagebox.showerror("Error", "Please connect to database first")
+            return
+
+        try:
+            from cleaner_core import InfluxDBCleaner
+            cleaner = InfluxDBCleaner(self.analyzer.client, self.analyzer.database)
+
+            # Create results window
+            results_window = tk.Toplevel(self.root)
+            results_window.title("Data Density Analysis")
+            results_window.geometry("800x600")
+
+            results_text = ScrolledText(results_window, wrap=tk.WORD)
+            results_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+            results_text.insert(tk.END, "Data Density Analysis Results\n" + "="*50 + "\n\n")
+
+            for measurement in selected:
+                results_text.insert(tk.END, f"Analyzing {measurement}...\n")
+                results_text.update()
+
+                analysis = cleaner.analyze_data_density(measurement)
+
+                if 'error' in analysis:
+                    results_text.insert(tk.END, f"❌ Error: {analysis['error']}\n\n")
+                    continue
+
+                results_text.insert(tk.END, f"📊 {measurement}\n")
+                results_text.insert(tk.END, f"  Data frequency: {analysis['points_per_day']:.1f} points/day, {analysis['points_per_hour']:.1f} points/hour\n")
+                results_text.insert(tk.END, f"  Old data points (>1 year): {analysis['old_data_points']}\n")
+                results_text.insert(tk.END, f"  Recommendations:\n")
+
+                for rec in analysis['recommendations']:
+                    results_text.insert(tk.END, f"    • {rec}\n")
+
+                results_text.insert(tk.END, f"  Storage reduction estimates:\n")
+                for agg_type, estimate in analysis['estimated_reductions'].items():
+                    results_text.insert(tk.END, f"    • {agg_type.replace('_', ' ').title()}: {estimate}\n")
+
+                results_text.insert(tk.END, "\n")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Density analysis failed: {str(e)}")
+
+    def aggregate_old_data_gui(self):
+        """GUI for aggregating old data"""
+        selected = self.get_selected_measurements()
+
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select measurements to aggregate.")
+            return
+
+        if not self.analyzer:
+            messagebox.showerror("Error", "Please connect to database first")
+            return
+
+        # Create configuration dialog
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Aggregate Old Data")
+        config_window.geometry("400x300")
+        config_window.transient(self.root)
+        config_window.grab_set()
+
+        ttk.Label(config_window, text="Aggregate Old Data Configuration", font=('TkDefaultFont', 12, 'bold')).pack(pady=10)
+
+        # Age threshold
+        age_frame = ttk.LabelFrame(config_window, text="Age Threshold", padding="10")
+        age_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(age_frame, text="Aggregate data older than:").pack(anchor=tk.W)
+        age_var = tk.DoubleVar(value=2.0)
+        age_frame_inner = ttk.Frame(age_frame)
+        age_frame_inner.pack(fill=tk.X)
+        ttk.Entry(age_frame_inner, textvariable=age_var, width=10).pack(side=tk.LEFT)
+        ttk.Label(age_frame_inner, text="years").pack(side=tk.LEFT, padx=(5,0))
+
+        # Aggregation type
+        agg_frame = ttk.LabelFrame(config_window, text="Aggregation Type", padding="10")
+        agg_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        agg_var = tk.StringVar(value="auto")
+        ttk.Radiobutton(agg_frame, text="Auto (based on data density)", variable=agg_var, value="auto").pack(anchor=tk.W)
+        ttk.Radiobutton(agg_frame, text="Hourly averages", variable=agg_var, value="hourly").pack(anchor=tk.W)
+        ttk.Radiobutton(agg_frame, text="Daily averages", variable=agg_var, value="daily").pack(anchor=tk.W)
+        ttk.Radiobutton(agg_frame, text="Weekly averages", variable=agg_var, value="weekly").pack(anchor=tk.W)
+        ttk.Radiobutton(agg_frame, text="Monthly averages", variable=agg_var, value="monthly").pack(anchor=tk.W)
+
+        # Selected measurements info
+        info_text = f"Selected measurements ({len(selected)}):\n" + "\n".join([f"• {m}" for m in selected])
+        ttk.Label(config_window, text=info_text, wraplength=350).pack(pady=10)
+
+        # Buttons
+        button_frame = ttk.Frame(config_window)
+        button_frame.pack(pady=20)
+
+        def execute_aggregation():
+            try:
+                from cleaner_core import InfluxDBCleaner
+                cleaner = InfluxDBCleaner(self.analyzer.client, self.analyzer.database)
+
+                config_window.destroy()
+
+                # Show progress
+                messagebox.showinfo("Processing", "Aggregation started. This may take several minutes depending on data size.")
+
+                if agg_var.get() == "auto":
+                    results = cleaner.filter_and_clean_by_age(selected, age_var.get(), action='aggregate')
+                else:
+                    # Manual aggregation for each measurement
+                    from datetime import datetime, timedelta
+                    cutoff_date = datetime.now() - timedelta(days=age_var.get() * 365)
+                    results = {}
+
+                    for measurement in selected:
+                        results[measurement] = cleaner.aggregate_old_data(measurement, cutoff_date, agg_var.get())
+
+                # Show results
+                successful = [m for m, success in results.items() if success]
+                failed = [m for m, success in results.items() if not success]
+
+                result_message = f"Aggregation Results:\n\nSuccessful: {len(successful)}\nFailed: {len(failed)}"
+                if successful:
+                    result_message += f"\n\nAggregated:\n" + "\n".join([f"• {m}" for m in successful])
+                if failed:
+                    result_message += f"\n\nFailed:\n" + "\n".join([f"• {m}" for m in failed])
+
+                messagebox.showinfo("Aggregation Complete", result_message)
+
+                # Refresh analysis
+                self.analyze_db()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Aggregation failed: {str(e)}")
+
+        ttk.Button(button_frame, text="Execute", command=execute_aggregation).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=config_window.destroy).pack(side=tk.LEFT, padx=5)
+
+    def filter_by_age_gui(self):
+        """GUI for filtering data by age"""
+        selected = self.get_selected_measurements()
+
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select measurements to filter.")
+            return
+
+        if not self.analyzer:
+            messagebox.showerror("Error", "Please connect to database first")
+            return
+
+        # Create configuration dialog
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Filter by Age")
+        config_window.geometry("400x280")
+        config_window.transient(self.root)
+        config_window.grab_set()
+
+        ttk.Label(config_window, text="Filter Data by Age", font=('TkDefaultFont', 12, 'bold')).pack(pady=10)
+
+        # Age threshold
+        age_frame = ttk.LabelFrame(config_window, text="Age Threshold", padding="10")
+        age_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(age_frame, text="Process data older than:").pack(anchor=tk.W)
+        age_var = tk.DoubleVar(value=2.0)
+        age_frame_inner = ttk.Frame(age_frame)
+        age_frame_inner.pack(fill=tk.X)
+        ttk.Entry(age_frame_inner, textvariable=age_var, width=10).pack(side=tk.LEFT)
+        ttk.Label(age_frame_inner, text="years").pack(side=tk.LEFT, padx=(5,0))
+
+        # Action type
+        action_frame = ttk.LabelFrame(config_window, text="Action", padding="10")
+        action_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        action_var = tk.StringVar(value="aggregate")
+        ttk.Radiobutton(action_frame, text="Aggregate old data (recommended)", variable=action_var, value="aggregate").pack(anchor=tk.W)
+        ttk.Radiobutton(action_frame, text="Delete old data (permanent!)", variable=action_var, value="delete").pack(anchor=tk.W)
+
+        # Selected measurements info
+        info_text = f"Selected measurements ({len(selected)}):\n" + "\n".join([f"• {m}" for m in selected[:5]])
+        if len(selected) > 5:
+            info_text += f"\n... and {len(selected) - 5} more"
+        ttk.Label(config_window, text=info_text, wraplength=350).pack(pady=10)
+
+        # Buttons
+        button_frame = ttk.Frame(config_window)
+        button_frame.pack(pady=20)
+
+        def execute_filter():
+            try:
+                from cleaner_core import InfluxDBCleaner
+                cleaner = InfluxDBCleaner(self.analyzer.client, self.analyzer.database)
+
+                action = action_var.get()
+                age_threshold = age_var.get()
+
+                # Confirm deletion action
+                if action == "delete":
+                    confirm = messagebox.askyesno(
+                        "Confirm Deletion",
+                        f"Are you sure you want to PERMANENTLY DELETE data older than {age_threshold} years?\n\n"
+                        "This action cannot be undone!\n\n"
+                        "Backups will be created automatically."
+                    )
+                    if not confirm:
+                        return
+
+                config_window.destroy()
+
+                # Show progress
+                action_text = "aggregation" if action == "aggregate" else "deletion"
+                messagebox.showinfo("Processing", f"Data {action_text} started. This may take several minutes.")
+
+                results = cleaner.filter_and_clean_by_age(selected, age_threshold, action)
+
+                # Show results
+                successful = [m for m, success in results.items() if success]
+                failed = [m for m, success in results.items() if not success]
+
+                action_past = "aggregated" if action == "aggregate" else "cleaned"
+                result_message = f"Age Filter Results:\n\nSuccessful: {len(successful)}\nFailed: {len(failed)}"
+                if successful:
+                    result_message += f"\n\n{action_past.title()}:\n" + "\n".join([f"• {m}" for m in successful])
+                if failed:
+                    result_message += f"\n\nFailed:\n" + "\n".join([f"• {m}" for m in failed])
+
+                messagebox.showinfo("Filter Complete", result_message)
+
+                # Refresh analysis
+                self.analyze_db()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Age filtering failed: {str(e)}")
+
+        ttk.Button(button_frame, text="Execute", command=execute_filter).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=config_window.destroy).pack(side=tk.LEFT, padx=5)
 
     def run(self):
         """Run the GUI"""

@@ -42,6 +42,8 @@ This tool provides a safe, interactive solution for database cleanup with automa
 - **Smart merging** of multiple measurements with source tracking
 - **Bulk cleanup** for measurements with few data points
 - **Measurement splitting** by tag values
+- **Data aggregation** - Intelligent compression of old data
+- **Age-based filtering** - Time-based cleanup with configurable thresholds
 
 ## 📦 Installation
 
@@ -134,6 +136,34 @@ The Hierarchy view shows measurements in a tree-like structure:
 - Identifies logical groupings
 - Helps with merge decisions
 - Shows naming patterns
+
+## 📊 Data Aggregation & Filtering
+
+### Solving the Problem: CPU Usage with Too Many Data Points
+
+For long-term measurements like CPU usage, millions of data points can accumulate over years. The tool provides intelligent solutions:
+
+**Example Workflow:**
+1. **Select measurement**: e.g., "cpu_usage" with 2.5M data points over 3 years
+2. **Analyze Density**: Shows e.g., "50 points/hour - Consider daily aggregation for old data"
+3. **Aggregate Old Data**: Data older than 2 years → Daily averages (2.5M → 730 points, 99.97% reduction)
+
+**Available Aggregation Modes:**
+- **Auto**: Based on data frequency (recommended)
+- **Hourly**: Hourly averages
+- **Daily**: Daily averages
+- **Weekly**: Weekly averages
+- **Monthly**: Monthly averages
+
+**Smart Aggregation Logic:**
+- **COUNT/SUM Fields**: Summed (e.g., transactions)
+- **MAX/MIN Fields**: Maximum/Minimum preserved
+- **Other Fields**: Average (e.g., CPU, temperature)
+
+**Safety:**
+- Automatic backups before aggregation
+- Original data remains as separate measurements
+- Reversible operations through JSON backups
 
 ## 🔧 Configuration
 

@@ -42,6 +42,8 @@ Dieses Tool bietet eine sichere, interaktive Lösung zur Datenbankbereinigung mi
 - **Smart Merging** mehrerer Messungen mit Quell-Tracking
 - **Bulk Cleanup** für Messungen mit wenigen Datenpunkten
 - **Measurement Splitting** nach Tag-Werten
+- **Data Aggregation** - Intelligente Komprimierung alter Daten
+- **Age-based Filtering** - Zeitbasierte Bereinigung mit konfigurierbaren Schwellwerten
 
 ## 📦 Installation
 
@@ -116,6 +118,11 @@ python influx_cleaner.py --host influxdb.example.com --port 8086 --database sens
 - **Clean Low Data**: Messungen mit wenigen Datenpunkten bereinigen
 - **Export Analysis**: Analyseergebnisse als JSON exportieren
 
+**Neue Data Management Aktionen:**
+- **Analyze Density**: Datenfrequenz analysieren und Aggregations-Empfehlungen erhalten
+- **Aggregate Old Data**: Alte Daten zu Mittelwerten komprimieren (täglich/wöchentlich/monatlich)
+- **Filter by Age**: Daten nach Alter filtern (aggregieren oder löschen)
+
 ### Hierarchy Tab
 Die Hierarchy-Ansicht zeigt Measurements in einer baumartigen Struktur:
 
@@ -134,6 +141,34 @@ Die Hierarchy-Ansicht zeigt Measurements in einer baumartigen Struktur:
 - Identifiziert logische Gruppierungen
 - Hilft bei Merge-Entscheidungen
 - Zeigt Naming-Patterns auf
+
+## 📊 Data Aggregation & Filtering
+
+### Problem lösen: CPU-Auslastung mit zu vielen Datenpunkten
+
+Für Langzeit-Messungen wie CPU-Auslastung können sich über Jahre Millionen von Datenpunkten ansammeln. Das Tool bietet intelligente Lösungen:
+
+**Beispiel-Workflow:**
+1. **Messung auswählen**: z.B. "cpu_usage" mit 2.5 Mio. Datenpunkten über 3 Jahre
+2. **Analyze Density**: Zeigt z.B. "50 points/hour - Consider daily aggregation for old data"
+3. **Aggregate Old Data**: Daten älter als 2 Jahre → Tagesmittelwerte (2.5M → 730 Punkte, 99.97% Reduktion)
+
+**Verfügbare Aggregations-Modi:**
+- **Auto**: Basierend auf Datenfrequenz (empfohlen)
+- **Hourly**: Stundenmittelwerte
+- **Daily**: Tagesmittelwerte
+- **Weekly**: Wochenmittelwerte
+- **Monthly**: Monatsmittelwerte
+
+**Smart Aggregation Logic:**
+- **COUNT/SUM-Fields**: Summiert (z.B. Transaktionen)
+- **MAX/MIN-Fields**: Maximum/Minimum beibehalten
+- **Andere Fields**: Mittelwert (z.B. CPU, Temperatur)
+
+**Sicherheit:**
+- Automatische Backups vor Aggregation
+- Originaldaten bleiben als separate Measurements verfügbar
+- Reversible Operationen durch JSON-Backups
 
 ## 🔧 Konfiguration
 
