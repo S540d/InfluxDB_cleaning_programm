@@ -1051,7 +1051,7 @@ class InfluxCleanerGUI:
         # Create configuration dialog
         config_window = tk.Toplevel(self.root)
         config_window.title("Aggregate Old Data")
-        config_window.geometry("400x300")
+        config_window.geometry("400x380")
         config_window.transient(self.root)
         config_window.grab_set()
 
@@ -1082,6 +1082,13 @@ class InfluxCleanerGUI:
         # Selected measurements info
         info_text = f"Selected measurements ({len(selected)}):\n" + "\n".join([f"• {m}" for m in selected])
         ttk.Label(config_window, text=info_text, wraplength=350).pack(pady=10)
+
+        # Warning for Grafana users
+        warning_frame = ttk.LabelFrame(config_window, text="⚠️ Grafana Warning", padding="5")
+        warning_frame.pack(fill=tk.X, padx=10, pady=5)
+        warning_text = ("Aggregated data may display differently in Grafana dashboards.\n"
+                       "Test with dashboard copies first. Alert rules may need adjustment.")
+        ttk.Label(warning_frame, text=warning_text, wraplength=350, foreground="orange").pack()
 
         # Buttons
         button_frame = ttk.Frame(config_window)

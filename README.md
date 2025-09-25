@@ -170,6 +170,14 @@ Für Langzeit-Messungen wie CPU-Auslastung können sich über Jahre Millionen vo
 - Originaldaten bleiben als separate Measurements verfügbar
 - Reversible Operationen durch JSON-Backups
 
+**⚠️ Wichtiger Hinweis für Grafana-Nutzer:**
+Aggregierte Daten haben reduzierte Granularität und können in Grafana anders dargestellt werden:
+- **Detailgrade Dashboards**: Verlieren Präzision bei kurzen Zeiträumen (Minuten/Stunden)
+- **Zoom-Funktionen**: Weniger Details beim Hineinzoomen in aggregierte Bereiche
+- **Alert-Regeln**: Müssen eventuell angepasst werden (andere Measurement-Namen)
+- **Query-Performance**: Wird für Langzeit-Dashboards deutlich verbessert
+- **Empfehlung**: Teste aggregierte Daten erst in einer Kopie der Grafana-Dashboards
+
 ## 🔧 Konfiguration
 
 ### Verbindungsparameter

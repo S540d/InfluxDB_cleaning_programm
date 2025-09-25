@@ -165,6 +165,14 @@ For long-term measurements like CPU usage, millions of data points can accumulat
 - Original data remains as separate measurements
 - Reversible operations through JSON backups
 
+**⚠️ Important Note for Grafana Users:**
+Aggregated data has reduced granularity and may be displayed differently in Grafana:
+- **Detail-level Dashboards**: Lose precision for short time ranges (minutes/hours)
+- **Zoom Functions**: Less detail when zooming into aggregated periods
+- **Alert Rules**: May need adjustment (different measurement names)
+- **Query Performance**: Significantly improved for long-term dashboards
+- **Recommendation**: Test aggregated data first in copies of your Grafana dashboards
+
 ## 🔧 Configuration
 
 ### Connection Parameters
